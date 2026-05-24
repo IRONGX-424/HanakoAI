@@ -13,6 +13,7 @@ import `fun`.kirari.hanako.data.ProcessingRoute
 import `fun`.kirari.hanako.data.resolveModelName
 import `fun`.kirari.hanako.data.resolveModelProvider
 import `fun`.kirari.hanako.data.SettingsStore
+import `fun`.kirari.hanako.data.toHistoryBase64
 import `fun`.kirari.hanako.network.AiGateway
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,8 +128,10 @@ internal class OverlayViewModel(
                         ProcessingResult(
                             assistantName = assistant.name,
                             route = ProcessingRoute.OCR_THEN_LLM,
+                            modelSummary = buildModelSummary(textModel, textProvider?.name),
                             extractedText = ocrText,
-                            answer = answer
+                            answer = answer,
+                            screenshotBase64 = bitmap.toHistoryBase64()
                         )
                     }
 
@@ -151,7 +154,9 @@ internal class OverlayViewModel(
                         ProcessingResult(
                             assistantName = assistant.name,
                             route = ProcessingRoute.MULTIMODAL_DIRECT,
-                            answer = answer
+                            modelSummary = buildModelSummary(visionModel, visionProvider?.name),
+                            answer = answer,
+                            screenshotBase64 = bitmap.toHistoryBase64()
                         )
                     }
                 }
@@ -215,6 +220,13 @@ internal class OverlayViewModel(
         val selectedIndex = assistants.indexOfFirst { it.id == current.selectedAssistantId }.takeIf { it >= 0 } ?: 0
         val nextIndex = if (selectedIndex == assistants.lastIndex) 0 else selectedIndex + 1
         selectAssistant(assistants[nextIndex].id)
+    }
+
+    private fun buildModelSummary(model: String, providerName: String?): String {
+        val trimmedModel = model.trim()
+        val trimmedProvider = providerName?.trim().orEmpty()
+        if (trimmedModel.isBlank()) return ""
+        return if (trimmedProvider.isBlank()) trimmedModel else "$trimmedModel（$trimmedProvider）"
     }
 
     companion object {

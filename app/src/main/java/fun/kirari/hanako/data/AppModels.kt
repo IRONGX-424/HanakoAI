@@ -102,10 +102,13 @@ data class AppSettings(
 
 @Serializable
 data class ProcessingResult(
+    val id: String = UUID.randomUUID().toString(),
     val assistantName: String,
     val route: ProcessingRoute,
+    val modelSummary: String = "",
     val extractedText: String = "",
     val answer: String = "",
+    val screenshotBase64: String? = null,
     val createdAtMillis: Long = System.currentTimeMillis()
 )
 

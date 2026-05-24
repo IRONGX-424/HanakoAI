@@ -11,10 +11,14 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import android.util.Log
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.WindowManager
@@ -173,6 +177,16 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             var startX = 0
             var startY = 0
             var dragging = false
+            var longPressTriggered = false
+            val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+            val longPressRunnable = Runnable {
+                if (!dragging) {
+                    longPressTriggered = true
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    vibrateShort()
+                    openMainActivity()
+                }
+            }
             setOnTouchListener { _, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -181,6 +195,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         startX = params.x
                         startY = params.y
                         dragging = false
+                        longPressTriggered = false
+                        removeCallbacks(longPressRunnable)
+                        postDelayed(longPressRunnable, longPressTimeout)
                         true
                     }
 
@@ -189,6 +206,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         val dy = (event.rawY - downRawY).toInt()
                         if (!dragging && (kotlin.math.abs(dx) > touchSlop || kotlin.math.abs(dy) > touchSlop)) {
                             dragging = true
+                            removeCallbacks(longPressRunnable)
                         }
                         if (dragging) {
                             params.x = startX + dx
@@ -199,9 +217,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                     }
 
                     MotionEvent.ACTION_UP -> {
-                        if (!dragging) {
+                        removeCallbacks(longPressRunnable)
+                        if (!dragging && !longPressTriggered) {
                             overlayViewModel.openCropSheet()
                         }
+                        true
+                    }
+
+                    MotionEvent.ACTION_CANCEL -> {
+                        removeCallbacks(longPressRunnable)
                         true
                     }
 
@@ -637,6 +661,34 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             .setContentIntent(openIntent)
             .setOngoing(true)
             .build()
+    }
+
+    private fun openMainActivity() {
+        startActivity(
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+        )
+    }
+
+    private fun vibrateShort() {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(VibratorManager::class.java)
+                vibratorManager?.defaultVibrator?.vibrate(
+                    VibrationEffect.createOneShot(30L, VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(VIBRATOR_SERVICE) as? Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(VibrationEffect.createOneShot(30L, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(30L)
+                }
+            }
+        }
     }
 
     private fun createNotificationChannel() {

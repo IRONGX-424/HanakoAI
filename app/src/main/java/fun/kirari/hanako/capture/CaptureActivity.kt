@@ -66,6 +66,7 @@ import `fun`.kirari.hanako.data.ProcessingRoute
 import `fun`.kirari.hanako.data.resolveModelName
 import `fun`.kirari.hanako.data.resolveModelProvider
 import `fun`.kirari.hanako.data.SettingsStore
+import `fun`.kirari.hanako.data.toHistoryBase64
 import `fun`.kirari.hanako.network.AiGateway
 import `fun`.kirari.hanako.overlay.MarkdownLatexText
 import `fun`.kirari.hanako.ui.theme.HanakoTheme
@@ -210,8 +211,10 @@ class CaptureViewModel(
                         ProcessingResult(
                             assistantName = assistant.name,
                             route = ProcessingRoute.OCR_THEN_LLM,
+                            modelSummary = buildModelSummary(textModel, textProvider?.name),
                             extractedText = ocrText,
-                            answer = answer
+                            answer = answer,
+                            screenshotBase64 = bitmap.toHistoryBase64()
                         )
                     }
 
@@ -233,7 +236,9 @@ class CaptureViewModel(
                         ProcessingResult(
                             assistantName = assistant.name,
                             route = ProcessingRoute.MULTIMODAL_DIRECT,
-                            answer = answer
+                            modelSummary = buildModelSummary(visionModel, visionProvider?.name),
+                            answer = answer,
+                            screenshotBase64 = bitmap.toHistoryBase64()
                         )
                     }
                 }
@@ -256,6 +261,13 @@ class CaptureViewModel(
 
     fun closeResultSheet() {
         _uiState.value = _uiState.value.copy(showResultSheet = false)
+    }
+
+    private fun buildModelSummary(model: String, providerName: String?): String {
+        val trimmedModel = model.trim()
+        val trimmedProvider = providerName?.trim().orEmpty()
+        if (trimmedModel.isBlank()) return ""
+        return if (trimmedProvider.isBlank()) trimmedModel else "$trimmedModel（$trimmedProvider）"
     }
 
     companion object {
@@ -358,9 +370,24 @@ private fun CropAndProcessContent(
     val selectedAssistant = uiState.settings.assistants.firstOrNull { it.id == uiState.settings.selectedAssistantId }
     val primaryColor = MaterialTheme.colorScheme.primary
     val routeText = if (uiState.settings.processingRoute == ProcessingRoute.OCR_THEN_LLM) {
-        "先 OCR 再发送"
+        "OCR模式"
     } else {
-        "直接发给多模态"
+        "多模态模式"
+    }
+    val activePurpose = if (uiState.settings.processingRoute == ProcessingRoute.OCR_THEN_LLM) {
+        ModelPurpose.TEXT
+    } else {
+        ModelPurpose.VISION
+    }
+    val activeProvider = uiState.settings.resolveModelProvider(activePurpose)
+    val activeModel = uiState.settings.resolveModelName(activePurpose)
+    val modelProviderText = buildString {
+        append(activeModel.ifBlank { "未配置模型" })
+        activeProvider?.name?.takeIf { it.isNotBlank() }?.let { providerName ->
+            append("（")
+            append(providerName)
+            append("）")
+        }
     }
 
     BoxWithConstraints(
@@ -421,7 +448,18 @@ private fun CropAndProcessContent(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text("助手：${selectedAssistant?.name.orEmpty()}", style = MaterialTheme.typography.titleMedium)
-                    Text("处理方式：$routeText", style = MaterialTheme.typography.bodyMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(routeText, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            modelProviderText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Text(
                         "拖动顶部抓手可调整面板高度，拖到底会关闭。",
                         style = MaterialTheme.typography.bodySmall,
@@ -697,17 +735,26 @@ private fun cropBitmap(
     canvasSize: IntSize
 ): Bitmap {
     if (canvasSize.width == 0 || canvasSize.height == 0) return source
-    val left = minOf(start.x, end.x).coerceIn(0f, canvasSize.width.toFloat())
-    val top = minOf(start.y, end.y).coerceIn(0f, canvasSize.height.toFloat())
-    val right = maxOf(start.x, end.x).coerceIn(0f, canvasSize.width.toFloat())
-    val bottom = maxOf(start.y, end.y).coerceIn(0f, canvasSize.height.toFloat())
-    val scaleX = source.width.toFloat() / canvasSize.width.toFloat()
-    val scaleY = source.height.toFloat() / canvasSize.height.toFloat()
-    val cropLeft = (left * scaleX).toInt().coerceIn(0, source.width - 1)
-    val cropTop = (top * scaleY).toInt().coerceIn(0, source.height - 1)
-    val cropWidth = ((right - left) * scaleX).toInt().coerceAtLeast(1)
+    val canvasWidth = canvasSize.width.toFloat()
+    val canvasHeight = canvasSize.height.toFloat()
+    val scale = minOf(canvasWidth / source.width.toFloat(), canvasHeight / source.height.toFloat())
+    val displayedWidth = source.width * scale
+    val displayedHeight = source.height * scale
+    val imageLeft = (canvasWidth - displayedWidth) / 2f
+    val imageTop = (canvasHeight - displayedHeight) / 2f
+    val imageRight = imageLeft + displayedWidth
+    val imageBottom = imageTop + displayedHeight
+
+    val left = minOf(start.x, end.x).coerceIn(imageLeft, imageRight)
+    val top = minOf(start.y, end.y).coerceIn(imageTop, imageBottom)
+    val right = maxOf(start.x, end.x).coerceIn(imageLeft, imageRight)
+    val bottom = maxOf(start.y, end.y).coerceIn(imageTop, imageBottom)
+
+    val cropLeft = ((left - imageLeft) / scale).toInt().coerceIn(0, source.width - 1)
+    val cropTop = ((top - imageTop) / scale).toInt().coerceIn(0, source.height - 1)
+    val cropWidth = ((right - left) / scale).toInt().coerceAtLeast(1)
         .coerceAtMost(source.width - cropLeft)
-    val cropHeight = ((bottom - top) * scaleY).toInt().coerceAtLeast(1)
+    val cropHeight = ((bottom - top) / scale).toInt().coerceAtLeast(1)
         .coerceAtMost(source.height - cropTop)
     return Bitmap.createBitmap(source, cropLeft, cropTop, cropWidth, cropHeight)
 }

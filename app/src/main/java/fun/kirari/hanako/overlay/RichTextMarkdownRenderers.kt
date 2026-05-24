@@ -140,18 +140,32 @@ private fun Heading(node: ASTNode, content: String) {
         MarkdownElementTypes.ATX_5 -> MaterialTheme.typography.titleMedium
         else -> MaterialTheme.typography.titleSmall
     }
-    val padding = when (node.type) {
-        MarkdownElementTypes.ATX_1 -> 16.dp
-        MarkdownElementTypes.ATX_2 -> 14.dp
-        MarkdownElementTypes.ATX_3 -> 12.dp
-        MarkdownElementTypes.ATX_4 -> 10.dp
+    val topPadding = when (node.type) {
+        MarkdownElementTypes.ATX_1 -> 22.dp
+        MarkdownElementTypes.ATX_2 -> 20.dp
+        MarkdownElementTypes.ATX_3 -> 18.dp
+        MarkdownElementTypes.ATX_4 -> 16.dp
+        MarkdownElementTypes.ATX_5 -> 14.dp
+        else -> 12.dp
+    }
+    val bottomPadding = when (node.type) {
+        MarkdownElementTypes.ATX_1 -> 12.dp
+        MarkdownElementTypes.ATX_2 -> 10.dp
+        MarkdownElementTypes.ATX_3 -> 10.dp
+        MarkdownElementTypes.ATX_4 -> 8.dp
         MarkdownElementTypes.ATX_5 -> 8.dp
         else -> 6.dp
     }
     ProvideTextStyle(style) {
         node.children.fastForEach { child ->
             if (child.type == MarkdownTokenTypes.ATX_CONTENT) {
-                Paragraph(node = child, content = content, trim = true, extraPadding = padding)
+                Paragraph(
+                    node = child,
+                    content = content,
+                    trim = true,
+                    topPadding = topPadding,
+                    bottomPadding = bottomPadding
+                )
             }
         }
     }
@@ -390,7 +404,8 @@ private fun Paragraph(
     node: ASTNode,
     content: String,
     trim: Boolean = false,
-    extraPadding: androidx.compose.ui.unit.Dp = 0.dp
+    topPadding: androidx.compose.ui.unit.Dp = 0.dp,
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val density = LocalDensity.current
@@ -420,7 +435,7 @@ private fun Paragraph(
         inlineContent = inlineContents,
         softWrap = true,
         overflow = TextOverflow.Visible,
-        modifier = Modifier.padding(bottom = extraPadding)
+        modifier = Modifier.padding(top = topPadding, bottom = bottomPadding)
     )
 }
 

@@ -1,5 +1,7 @@
 package `fun`.kirari.hanako.ui.components
 
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +26,7 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,23 +34,73 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import `fun`.kirari.hanako.data.ModelProviderConfig
 import `fun`.kirari.hanako.data.ProviderKind
 import `fun`.kirari.hanako.data.displayName
+import `fun`.kirari.hanako.data.parseImportedProviderConfig
 import `fun`.kirari.hanako.data.requestPreviewUrl
 
 @Composable
 fun ProviderEditor(
     provider: ModelProviderConfig,
-    onChange: (ModelProviderConfig) -> Unit
+    onChange: (ModelProviderConfig) -> Unit,
+    onImportResult: (String) -> Unit = {}
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier.animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "提供方配置",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    val text = clipboard
+                        ?.takeIf { it.hasPrimaryClip() }
+                        ?.primaryClip
+                        ?.takeIf { clip ->
+                            val description = clipboard.primaryClipDescription
+                            description == null ||
+                                description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) ||
+                                description.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML)
+                        }
+                        ?.getItemAt(0)
+                        ?.coerceToText(context)
+                        ?.toString()
+                        .orEmpty()
+                    val imported = parseImportedProviderConfig(text)
+                    if (imported != null) {
+                        onChange(
+                            provider.copy(
+                                kind = imported.kind,
+                                name = imported.name ?: provider.name,
+                                baseUrl = imported.baseUrl,
+                                apiKey = imported.apiKey
+                            )
+                        )
+                        onImportResult("已粘贴导入配置")
+                    } else {
+                        onImportResult("未识别到支持的提供方配置")
+                    }
+                }
+            ) {
+                Text("粘贴")
+            }
+        }
+
         ProviderTypeSelector(
             kind = provider.kind,
             onChange = { nextKind ->

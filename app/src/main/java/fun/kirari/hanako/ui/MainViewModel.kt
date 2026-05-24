@@ -157,6 +157,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteHistoryItem(resultId: String) {
+        viewModelScope.launch {
+            store.update { current ->
+                val history = current.history.filterNot { it.id == resultId }
+                val lastResult = current.lastResult?.takeUnless { it.id == resultId }
+                current.copy(
+                    history = history,
+                    lastResult = lastResult
+                )
+            }
+        }
+    }
+
     fun saveResult(result: ProcessingResult) {
         viewModelScope.launch {
             store.update { it.copy(

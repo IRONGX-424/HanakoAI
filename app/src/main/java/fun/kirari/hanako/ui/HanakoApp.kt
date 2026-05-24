@@ -1,5 +1,6 @@
 package `fun`.kirari.hanako.ui
 
+import androidx.compose.foundation.Image
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -65,10 +66,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -78,6 +83,9 @@ import `fun`.kirari.hanako.capture.ProjectionPermissionActivity
 import `fun`.kirari.hanako.capture.ProjectionSessionManager
 import `fun`.kirari.hanako.data.ModelPurpose
 import `fun`.kirari.hanako.data.ModelSelection
+import `fun`.kirari.hanako.data.ProcessingResult
+import `fun`.kirari.hanako.data.ProcessingRoute
+import `fun`.kirari.hanako.data.decodeHistoryBitmap
 import `fun`.kirari.hanako.data.displayName
 import `fun`.kirari.hanako.data.modelSelectionFor
 import `fun`.kirari.hanako.data.normalize
@@ -101,6 +109,7 @@ enum class Screen(val title: String, val icon: ImageVector) {
 
 private const val ROUTE_HANAKO_HOME = "hanako_home"
 private const val ROUTE_HANAKO_HISTORY = "hanako_history"
+private const val ROUTE_HANAKO_HISTORY_DETAIL = "hanako_history_detail"
 private const val ROUTE_SETTINGS_MENU = "settings_menu"
 private const val ROUTE_SETTINGS_PROVIDER = "settings_provider"
 private const val ROUTE_SETTINGS_PROVIDER_DETAIL = "settings_provider_detail"
@@ -109,9 +118,11 @@ private const val ROUTE_SETTINGS_ASSISTANT = "settings_assistant"
 private const val ROUTE_SETTINGS_ASSISTANT_DETAIL = "settings_assistant_detail"
 private const val ARG_PROVIDER_ID = "providerId"
 private const val ARG_ASSISTANT_ID = "assistantId"
+private const val ARG_HISTORY_ID = "historyId"
 
 private fun providerDetailRoute(providerId: String): String = "$ROUTE_SETTINGS_PROVIDER_DETAIL/$providerId"
 private fun assistantDetailRoute(assistantId: String): String = "$ROUTE_SETTINGS_ASSISTANT_DETAIL/$assistantId"
+private fun historyDetailRoute(historyId: String): String = "$ROUTE_HANAKO_HISTORY_DETAIL/$historyId"
 
 private fun settingsTitle(route: String?): String = when (route) {
     ROUTE_SETTINGS_PROVIDER -> "模型提供方"
@@ -127,7 +138,11 @@ private fun settingsTitle(route: String?): String = when (route) {
 
 private fun hanakoTitle(route: String?): String = when (route) {
     ROUTE_HANAKO_HISTORY -> "历史记录"
-    else -> Screen.Hanako.title
+    null -> Screen.Hanako.title
+    else -> when {
+        route.startsWith("$ROUTE_HANAKO_HISTORY_DETAIL/") -> "历史详情"
+        else -> Screen.Hanako.title
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -307,7 +322,8 @@ fun HanakoApp(viewModel: MainViewModel) {
                                 }
                             },
                             onSelectRoute = viewModel::setRoute,
-                            onClearHistory = viewModel::clearHistory
+                            onClearHistory = viewModel::clearHistory,
+                            onDeleteHistoryItem = viewModel::deleteHistoryItem
                         )
                     }
                     Screen.Settings -> {
@@ -419,7 +435,8 @@ private fun HanakoNavHost(
     onOpenOverlayPermission: () -> Unit,
     onToggleOverlay: (Boolean) -> Unit,
     onSelectRoute: (`fun`.kirari.hanako.data.ProcessingRoute) -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onDeleteHistoryItem: (String) -> Unit
 ) {
     NavHost(
         navController = navController as androidx.navigation.NavHostController,
@@ -500,8 +517,17 @@ private fun HanakoNavHost(
         composable(ROUTE_HANAKO_HISTORY) {
             HistorySubScreen(
                 settings = settings,
-                onClearHistory = onClearHistory
+                onClearHistory = onClearHistory,
+                onDeleteHistoryItem = onDeleteHistoryItem,
+                onOpenHistoryDetail = { resultId ->
+                    navController.navigate(historyDetailRoute(resultId))
+                }
             )
+        }
+        composable("$ROUTE_HANAKO_HISTORY_DETAIL/{$ARG_HISTORY_ID}") { backStackEntry ->
+            val resultId = backStackEntry.arguments?.getString(ARG_HISTORY_ID)
+            val result = settings.history.firstOrNull { it.id == resultId }
+            HistoryDetailScreen(result = result)
         }
     }
 }
@@ -509,8 +535,15 @@ private fun HanakoNavHost(
 @Composable
 private fun HistorySubScreen(
     settings: `fun`.kirari.hanako.data.AppSettings,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onDeleteHistoryItem: (String) -> Unit,
+    onOpenHistoryDetail: (String) -> Unit
 ) {
+    var deleteTargetId by remember { mutableStateOf<String?>(null) }
+    val historyStorageText = remember(settings.history) {
+        formatHistorySize(settings.history.sumOf { it.screenshotBase64?.length ?: 0 })
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -529,6 +562,11 @@ private fun HistorySubScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    historyStorageText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 TextButton(
                     onClick = onClearHistory,
                     enabled = settings.history.isNotEmpty()
@@ -547,32 +585,231 @@ private fun HistorySubScreen(
                 }
             }
         } else {
-            items(settings.history.size) { index ->
-                val result = settings.history[index]
-                SectionCard(title = "助手：${result.assistantName}") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            if (result.route == `fun`.kirari.hanako.data.ProcessingRoute.OCR_THEN_LLM) "模式：OCR" else "模式：多模态",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (result.extractedText.isNotBlank()) {
-                            Text(
-                                "OCR：${result.extractedText}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        MarkdownLatexText(
-                            content = result.answer,
-                            modifier = Modifier.fillMaxWidth()
+            items(settings.history, key = { it.id }) { result ->
+                HistoryListItem(
+                    result = result,
+                    onClick = { onOpenHistoryDetail(result.id) },
+                    onLongClick = { deleteTargetId = result.id }
+                )
+            }
+        }
+        item { Spacer(modifier = Modifier.height(80.dp)) }
+    }
+
+    val deleteTarget = settings.history.firstOrNull { it.id == deleteTargetId }
+    if (deleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTargetId = null },
+            title = { Text("删除历史记录") },
+            text = { Text("确认删除 ${deleteTarget.assistantName} 的这条记录？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteHistoryItem(deleteTarget.id)
+                        deleteTargetId = null
+                    }
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTargetId = null }) {
+                    Text("取消")
+                }
+            },
+            icon = {
+                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            }
+        )
+    }
+}
+
+@Composable
+private fun HistoryListItem(
+    result: ProcessingResult,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val thumbnail = remember(result.screenshotBase64) {
+        result.screenshotBase64?.decodeHistoryBitmap()
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    result.assistantName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "模式：${result.route.displayName()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = result.answer.ifBlank { "暂无回答" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                modifier = Modifier.size(width = 84.dp, height = 112.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest
+            ) {
+                if (thumbnail != null) {
+                    Image(
+                        bitmap = thumbnail.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HistoryDetailScreen(result: ProcessingResult?) {
+    if (result == null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "未找到该历史记录。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+
+    val screenshot = remember(result.screenshotBase64) {
+        result.screenshotBase64?.decodeHistoryBitmap()
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            val headerMeta = buildList {
+                add(result.route.displayName())
+                result.modelSummary.takeIf { it.isNotBlank() }?.let(::add)
+            }.joinToString(" · ")
+            SectionCard(title = result.assistantName) {
+                Text(
+                    text = headerMeta,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        screenshot?.let { bitmap ->
+            item {
+                HistoryResultCard(title = "原图") {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.FillWidth
+                    )
+                }
+            }
+        }
+        if (result.route == ProcessingRoute.OCR_THEN_LLM) {
+            item {
+                HistoryResultCard(title = "OCR 结果") {
+                    Text(
+                        result.extractedText.ifBlank { "暂无内容" },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+        item {
+            HistoryResultCard(title = "答案") {
+                if (result.answer.isNotBlank()) {
+                    MarkdownLatexText(
+                        content = result.answer,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Text("暂无内容")
+                }
+            }
+        }
         item { Spacer(modifier = Modifier.height(80.dp)) }
     }
+}
+
+@Composable
+private fun HistoryResultCard(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            content()
+        }
+    }
+}
+
+private fun ProcessingRoute.displayName(): String = when (this) {
+    ProcessingRoute.OCR_THEN_LLM -> "OCR"
+    ProcessingRoute.MULTIMODAL_DIRECT -> "多模态"
+}
+
+private fun formatHistorySize(charCount: Int): String {
+    val bytes = charCount.toLong()
+    if (bytes < 1024L) return "${bytes}B"
+    val kb = bytes / 1024.0
+    if (kb < 1024.0) return String.format("%.1fKB", kb)
+    val mb = kb / 1024.0
+    return String.format("%.1fMB", mb)
 }
 
 @Composable
@@ -894,17 +1131,21 @@ fun ProviderDetailScreen(
     onUpdateProvider: (`fun`.kirari.hanako.data.ModelProviderConfig) -> Unit,
     onViewModels: () -> Unit
 ) {
+    val context = LocalContext.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            SectionCard(title = "提供方配置") {
+            SectionCard(title = "") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     ProviderEditor(
                         provider = provider,
-                        onChange = onUpdateProvider
+                        onChange = onUpdateProvider,
+                        onImportResult = { message ->
+                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                        }
                     )
                     OutlinedButton(
                         onClick = onViewModels,

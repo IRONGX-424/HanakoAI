@@ -63,7 +63,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import `fun`.kirari.hanako.data.AssistantPreset
+import `fun`.kirari.hanako.data.ModelPurpose
 import `fun`.kirari.hanako.data.ProcessingRoute
+import `fun`.kirari.hanako.data.resolveModelName
+import `fun`.kirari.hanako.data.resolveModelProvider
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
@@ -125,7 +128,22 @@ private fun CropOverlaySheet(
     var cropEnd by remember { mutableStateOf(Offset.Zero) }
     val density = LocalDensity.current
     val selectedAssistant = uiState.settings.assistants.firstOrNull { it.id == uiState.settings.selectedAssistantId }
-    val routeText = if (uiState.settings.processingRoute == ProcessingRoute.OCR_THEN_LLM) "先 OCR 再发送" else "直接发给多模态"
+    val routeText = if (uiState.settings.processingRoute == ProcessingRoute.OCR_THEN_LLM) "OCR模式" else "多模态模式"
+    val activePurpose = if (uiState.settings.processingRoute == ProcessingRoute.OCR_THEN_LLM) {
+        ModelPurpose.TEXT
+    } else {
+        ModelPurpose.VISION
+    }
+    val activeProvider = uiState.settings.resolveModelProvider(activePurpose)
+    val activeModel = uiState.settings.resolveModelName(activePurpose)
+    val modelProviderText = buildString {
+        append(activeModel.ifBlank { "未配置模型" })
+        activeProvider?.name?.takeIf { it.isNotBlank() }?.let { providerName ->
+            append("（")
+            append(providerName)
+            append("）")
+        }
+    }
     val selectionColor = MaterialTheme.colorScheme.primary
     val panelMaxHeight = with(density) { panelHeightPx.toDp() }
     var showAssistantDialog by remember { mutableStateOf(false) }
@@ -180,7 +198,18 @@ private fun CropOverlaySheet(
                             onClose()
                         }
                     )
-                    Text("处理方式：$routeText", style = MaterialTheme.typography.bodyMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(routeText, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            modelProviderText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     uiState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     Box(
                         modifier = Modifier
@@ -322,24 +351,27 @@ private fun ResultOverlaySheet(
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             ) {
+                SheetTitleRow(
+                    title = {
+                        Text("处理中")
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, top = 16.dp, end = 12.dp, bottom = 8.dp),
+                    onClose = {
+                        if (closeRequested) return@SheetTitleRow
+                        closeRequested = true
+                        onClose()
+                    }
+                )
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(scrollState)
-                        .padding(start = 20.dp, top = 52.dp, end = 20.dp, bottom = 16.dp),
+                        .padding(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    SheetTitleRow(
-                        title = {
-                            Text("处理中")
-                        },
-                        style = MaterialTheme.typography.titleLarge,
-                        onClose = {
-                            if (closeRequested) return@SheetTitleRow
-                            closeRequested = true
-                            onClose()
-                        }
-                    )
                     ResultCard(title = "原图") {
                         uiState.selectedBitmap?.let { bitmap ->
                             Image(
@@ -372,16 +404,6 @@ private fun ResultOverlaySheet(
                         }
                     }
                     uiState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    OutlinedButton(
-                        onClick = {
-                            if (closeRequested) return@OutlinedButton
-                            closeRequested = true
-                            onClose()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (uiState.working) "后台处理中，先关闭" else "关闭")
-                    }
                 }
             }
         }
@@ -434,10 +456,11 @@ private fun CropHeaderRow(
 private fun SheetTitleRow(
     title: @Composable () -> Unit,
     style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.titleMedium,
+    modifier: Modifier = Modifier,
     onClose: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -692,15 +715,24 @@ private fun cropBitmap(
     canvasSize: IntSize
 ): Bitmap {
     if (canvasSize.width == 0 || canvasSize.height == 0) return source
-    val left = minOf(start.x, end.x).coerceIn(0f, canvasSize.width.toFloat())
-    val top = minOf(start.y, end.y).coerceIn(0f, canvasSize.height.toFloat())
-    val right = maxOf(start.x, end.x).coerceIn(0f, canvasSize.width.toFloat())
-    val bottom = maxOf(start.y, end.y).coerceIn(0f, canvasSize.height.toFloat())
-    val scaleX = source.width.toFloat() / canvasSize.width.toFloat()
-    val scaleY = source.height.toFloat() / canvasSize.height.toFloat()
-    val cropLeft = (left * scaleX).toInt().coerceIn(0, source.width - 1)
-    val cropTop = (top * scaleY).toInt().coerceIn(0, source.height - 1)
-    val cropWidth = ((right - left) * scaleX).toInt().coerceAtLeast(1).coerceAtMost(source.width - cropLeft)
-    val cropHeight = ((bottom - top) * scaleY).toInt().coerceAtLeast(1).coerceAtMost(source.height - cropTop)
+    val canvasWidth = canvasSize.width.toFloat()
+    val canvasHeight = canvasSize.height.toFloat()
+    val scale = minOf(canvasWidth / source.width.toFloat(), canvasHeight / source.height.toFloat())
+    val displayedWidth = source.width * scale
+    val displayedHeight = source.height * scale
+    val imageLeft = (canvasWidth - displayedWidth) / 2f
+    val imageTop = (canvasHeight - displayedHeight) / 2f
+    val imageRight = imageLeft + displayedWidth
+    val imageBottom = imageTop + displayedHeight
+
+    val left = minOf(start.x, end.x).coerceIn(imageLeft, imageRight)
+    val top = minOf(start.y, end.y).coerceIn(imageTop, imageBottom)
+    val right = maxOf(start.x, end.x).coerceIn(imageLeft, imageRight)
+    val bottom = maxOf(start.y, end.y).coerceIn(imageTop, imageBottom)
+
+    val cropLeft = ((left - imageLeft) / scale).toInt().coerceIn(0, source.width - 1)
+    val cropTop = ((top - imageTop) / scale).toInt().coerceIn(0, source.height - 1)
+    val cropWidth = ((right - left) / scale).toInt().coerceAtLeast(1).coerceAtMost(source.width - cropLeft)
+    val cropHeight = ((bottom - top) / scale).toInt().coerceAtLeast(1).coerceAtMost(source.height - cropTop)
     return Bitmap.createBitmap(source, cropLeft, cropTop, cropWidth, cropHeight)
 }
